@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>타이밍 베팅</title>
+<link rel="preconnect" href="https://firestore.googleapis.com" crossorigin>
+<link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin>
+<script>
+/* ============================================================
+   ▼▼▼ 여기에 Firebase 설정을 붙여넣으세요 ▼▼▼
+   (Firebase 콘솔 > 프로젝트 설정 > 내 앱 > firebaseConfig)
+   비워 두면 게스트 모드로만 동작합니다.
+   ============================================================ */
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDsHLQ2JoVjRStUCzxRDh8dTBtoSDuC1Pw",
+  authDomain: "timing-de75a.firebaseapp.com",
+  projectId: "timing-de75a",
+  storageBucket: "timing-de75a.firebasestorage.app",
+  messagingSenderId: "437674731814",
+  appId: "1:437674731814:web:b2d6f19dc9010fbcf439e7"
+};
+/* ▲▲▲ 여기까지 ▲▲▲
+
+   Firestore 보안 규칙 (Firestore Database > 규칙 탭에 붙여넣고 게시):
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /players/{uid} {
+      allow read: if true;
+      allow create, update: if request.auth != null && request.auth.uid == uid
+        && request.resource.data.name is string
+        && request.resource.data.name.size() <= 12
+        && (resource == null || request.resource.data.name == resource.data.name)
+        && request.resource.data.money is int && request.resource.data.money >= 0
+        && request.resource.data.peak is int && request.resource.data.peak >= 0;
+      allow delete: if false;
+    }
+  }
+}
+*/
+</script>
+<style>
+  :root{
+    --bg:#0e1014; --card:#171a21; --well:#0b0d11; --line:#272b35; --chip:#222632;
+    --text:#eef0f4; --sub:#8b92a3;
+    --accent:#ffcc33; --on-accent:#1a1400; --good:#3ddc97; --bad:#ff5c6c;
+    --gold:#ffcc33; --silver:#c9d1dc; --bronze:#d89a63;
+    --font:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard","Noto Sans KR",sans-serif;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font)}
+  body{min-height:100vh;display:flex;justify-content:center;
+    padding-block:max(16px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-bottom,0px));
+    padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+  .app{width:100%;max-width:440px;display:flex;flex-direction:column;gap:14px}
+  header{display:flex;justify-content:space-between;align-items:center;gap:12px}
+  h1{font-size:20px;margin:0;letter-spacing:-.5px}
+  h1 span{color:var(--accent)}
+  .money{text-align:right;min-width:0}
+  .money small{display:block;color:var(--sub);font-size:12px}
+  .money b{font-size:22px;font-variant-numeric:tabular-nums}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:20px}
+  .hidden{display:none!important}
+  .label{color:var(--sub);font-size:13px;text-align:center}
+  .target{font-size:56px;font-weight:800;text-align:center;font-variant-numeric:tabular-nums;
+    color:var(--accent);margin:4px 0 16px;letter-spacing:-1px}
+  input{width:100%;background:var(--well);border:1px solid var(--line);color:var(--text);
+    border-radius:12px;padding:14px;font-size:18px;outline:none;font-family:var(--font)}
+  input:focus{border-color:var(--accent)}
+  #betInput{text-align:right;font-size:20px;font-variant-numeric:tabular-nums}
+  .quick{display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin:10px 0 4px}
+  .quick button,.chipbtn{background:var(--chip);border:1px solid var(--line);color:var(--text);border-radius:10px;
+    padding:9px 0;font-size:13px;cursor:pointer;font-family:var(--font)}
+  .err{color:var(--bad);font-size:13px;min-height:18px;text-align:center;margin:6px 0}
+  .btn{width:100%;border:none;border-radius:14px;padding:16px;font-size:18px;font-weight:800;cursor:pointer;font-family:var(--font)}
+  .btn:disabled{opacity:.5;cursor:default}
+  .btn.main{background:var(--accent);color:var(--on-accent)}
+  .btn.ghost{background:var(--chip);color:var(--text)}
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  td{padding:6px 4px;border-bottom:1px solid var(--line)}
+  td:last-child{text-align:right;font-weight:700}
+  tr:last-child td{border-bottom:none}
+  h3{margin:0 0 10px;font-size:14px;color:var(--sub);font-weight:600}
+  .hint{color:var(--sub);font-size:13px}
+  .tabs{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:var(--well);padding:4px;border-radius:12px;margin-bottom:14px}
+  .tabs button{border:none;background:transparent;color:var(--sub);padding:10px;border-radius:9px;font-size:15px;font-weight:700;cursor:pointer;font-family:var(--font)}
+  .tabs button[aria-selected="true"]{background:var(--chip);color:var(--text)}
+  .form{display:flex;flex-direction:column;gap:8px}
+  .form .rule{font-size:12px;color:var(--sub);padding:0 2px}
+  .me{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:14px}
+  .me b{color:var(--accent)}
+  .me button{width:auto;padding:7px 12px}
+  .badge{display:inline-block;font-size:11px;padding:2px 7px;border-radius:999px;background:var(--chip);color:var(--sub);margin-left:6px;vertical-align:1px}
+  #run{user-select:none;-webkit-user-select:none;touch-action:manipulation;cursor:pointer;text-align:center}
+  .pulse{width:170px;height:170px;border-radius:50%;margin:10px auto 18px;
+    display:flex;align-items:center;justify-content:center;background:var(--bad);
+    font-size:30px;font-weight:900;color:var(--text);animation:pulse 1.2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(255,92,108,.45)}100%{box-shadow:0 0 0 28px rgba(255,92,108,0)}}
+  @media (prefers-reduced-motion:reduce){.pulse{animation:none}}
+  .res-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:8px 0 14px}
+  .res-grid div{background:var(--well);border-radius:12px;padding:12px;text-align:center}
+  .res-grid small{color:var(--sub);font-size:12px;display:block}
+  .res-grid b{font-size:24px;font-variant-numeric:tabular-nums}
+  .diff{text-align:center;font-size:42px;font-weight:900;font-variant-numeric:tabular-nums;margin:4px 0}
+  .tier{text-align:center;font-size:22px;font-weight:800;margin-bottom:4px}
+  .gain{text-align:center;font-size:18px;font-weight:700;margin-bottom:16px;font-variant-numeric:tabular-nums}
+  .over h2{text-align:center;color:var(--bad);font-size:34px;margin:6px 0}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;text-align:center;font-size:12px;color:var(--sub)}
+  .stats b{display:block;color:var(--text);font-size:16px;margin-top:2px;font-variant-numeric:tabular-nums}
+  .hist{font-size:12px;font-variant-numeric:tabular-nums}
+  .hist td{padding:5px 2px}
+  .empty{color:var(--sub);font-size:13px;text-align:center;padding:10px 0;display:block}
+  .rank-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px}
+  .rank-head h3{margin:0}
+  .live{font-size:11px;color:var(--good);display:inline-flex;align-items:center;gap:5px}
+  .live::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--good)}
+  .live.off{color:var(--sub)} .live.off::before{background:var(--sub)}
+  .seg{display:flex;gap:4px}
+  .seg button{background:var(--chip);border:1px solid var(--line);color:var(--sub);border-radius:999px;padding:5px 10px;font-size:12px;cursor:pointer;font-family:var(--font)}
+  .seg button[aria-pressed="true"]{color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
+  .rank{list-style:none;margin:0;padding:0;font-variant-numeric:tabular-nums}
+  .rank li{display:grid;grid-template-columns:34px 1fr auto;align-items:center;gap:8px;padding:9px 6px;border-bottom:1px solid var(--line);font-size:14px}
+  .rank li:last-child{border-bottom:none}
+  .rank li.mine{background:var(--chip);border-radius:10px}
+  .rank .no{font-weight:800;color:var(--sub);text-align:center}
+  .rank .no.g1{color:var(--gold)} .rank .no.g2{color:var(--silver)} .rank .no.g3{color:var(--bronze)}
+  .rank .nm{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rank .nm small{color:var(--sub);font-size:11px;margin-left:4px}
+  .rank .val{font-weight:800}
+  .rank li.empty{display:block;border-bottom:none}
+  .myrank{margin-top:10px;font-size:13px;color:var(--sub);text-align:center}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>타이밍 <span>베팅</span></h1>
+    <div class="money hidden" id="moneyBox"><small>자본금</small><b id="money">100,000원</b></div>
+  </header>
+
+  <section id="auth" class="card">
+    <div class="tabs" role="tablist">
+      <button id="tabLogin" role="tab" aria-selected="true">로그인</button>
+      <button id="tabSignup" role="tab" aria-selected="false">회원가입</button>
+    </div>
+    <form class="form" id="authForm" autocomplete="off">
+      <input id="authId" placeholder="아이디" maxlength="12" autocomplete="username">
+      <input id="authPw" type="password" placeholder="비밀번호" maxlength="64" autocomplete="current-password">
+      <input id="authPw2" type="password" placeholder="비밀번호 확인" maxlength="64" class="hidden" autocomplete="new-password">
+      <div class="rule">아이디 2~12자 (한글·영문·숫자·_), 비밀번호 6자 이상</div>
+      <div class="err" id="authErr"></div>
+      <button class="btn main" id="authBtn" type="submit">로그인</button>
+    </form>
+    <button class="btn ghost" id="guestBtn" style="margin-top:8px;font-size:14px;padding:12px">게스트로 하기 (랭킹 미반영)</button>
+    <div class="hint" id="dbNote" style="text-align:center;margin-top:10px">랭킹 서버에 연결하는 중…</div>
+  </section>
+
+  <section id="meBar" class="card hidden" style="padding:12px 16px">
+    <div class="me">
+      <div><b id="meName">-</b><span class="badge" id="meBadge">랭킹 참가 중</span></div>
+      <button class="chipbtn" id="logoutBtn">로그아웃</button>
+    </div>
+  </section>
+
+  <section id="bet" class="card hidden">
+    <div class="label">이번 목표 시간</div>
+    <div class="target" id="targetBet">0.00초</div>
+    <input id="betInput" type="text" inputmode="numeric" placeholder="베팅 금액 (원)" autocomplete="off">
+    <div class="quick">
+      <button data-q="1000">+1천</button>
+      <button data-q="10000">+1만</button>
+      <button data-q="half">절반</button>
+      <button data-q="all">올인</button>
+      <button data-q="clear">지움</button>
+    </div>
+    <div class="err" id="betErr"></div>
+    <button class="btn main" id="startBtn">시작</button>
+    <div class="hint" style="text-align:center;margin-top:8px">시작하면 시간이 보이지 않아요. 속으로 세고 STOP!</div>
+  </section>
+
+  <section id="run" class="card hidden">
+    <div class="label">목표</div>
+    <div class="target" id="targetRun">0.00초</div>
+    <div class="pulse">STOP</div>
+    <div class="hint">화면 아무 곳이나 탭 · 스페이스바</div>
+  </section>
+
+  <section id="result" class="card hidden">
+    <div class="res-grid">
+      <div><small>목표</small><b id="rTarget">-</b></div>
+      <div><small>내 기록</small><b id="rTime">-</b></div>
+    </div>
+    <div class="label">오차</div>
+    <div class="diff" id="rDiff">-</div>
+    <div class="tier" id="rTier">-</div>
+    <div class="gain" id="rGain">-</div>
+    <button class="btn main" id="nextBtn">다음 판</button>
+  </section>
+
+  <section id="over" class="card over hidden">
+    <h2>파산</h2>
+    <div class="label" style="margin-bottom:16px">자본금이 2,000원 미만이 되었습니다</div>
+    <div class="stats">
+      <div>플레이<b id="sRounds">0판</b></div>
+      <div>최고 자본<b id="sPeak">-</b></div>
+      <div>최소 오차<b id="sBest">-</b></div>
+    </div>
+    <button class="btn main" id="restartBtn" style="margin-top:18px">10만원으로 다시 시작</button>
+    <div class="hint" style="text-align:center;margin-top:8px">최고 자본 기록은 랭킹에 그대로 남아요</div>
+  </section>
+
+  <section class="card">
+    <div class="rank-head">
+      <h3>랭킹 <span class="live off" id="liveDot">연결 중</span></h3>
+      <div class="seg">
+        <button id="sortMoney" aria-pressed="true">현재 자본</button>
+        <button id="sortPeak" aria-pressed="false">최고 기록</button>
+      </div>
+    </div>
+    <ol class="rank" id="rankList"><li class="empty">랭킹을 불러오는 중…</li></ol>
+    <div class="myrank hidden" id="myRank"></div>
+  </section>
+
+  <section class="card">
+    <h3>배당표 (오차 기준)</h3>
+    <table id="payTable"></table>
+  </section>
+
+  <section class="card hidden" id="histCard">
+    <h3>최근 기록</h3>
+    <div id="histWrap"></div>
+    <div class="stats" style="margin-top:12px">
+      <div>플레이<b id="sRounds2">0판</b></div>
+      <div>최고 자본<b id="sPeak2">-</b></div>
+      <div>최소 오차<b id="sBest2">-</b></div>
+    </div>
+    <div id="resetWrap" style="margin-top:8px">
+      <button class="btn ghost" id="resetBtn" style="font-size:14px;padding:12px">자본금 10만원으로 초기화</button>
+    </div>
+    <div id="resetConfirm" class="hidden" style="margin-top:8px">
+      <div class="hint" style="text-align:center;margin-bottom:8px">자본금을 10만원으로 되돌릴까요? 최고 기록은 남아요.</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <button class="btn ghost" id="resetNo" style="font-size:14px;padding:12px">취소</button>
+        <button class="btn main" id="resetYes" style="font-size:14px;padding:12px;background:var(--bad);color:var(--text)">초기화</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script>
+/* ===== 설정 ===== */
+const START_MONEY = 100000;
+const BANKRUPT_LINE = 2000;
+const MIN_T = 100, MAX_T = 500;
+const POLL_MS = 5000;                     // 랭킹 자동 갱신 간격
+const EMAIL_DOMAIN = '@timingbet.game';   // 아이디를 내부용 가짜 이메일로 바꿀 때 사용 (인증 메일 없음)
+
+const TIERS = [
+  { max: 0,        mult: 20, name: '완벽!!',   color: 'var(--gold)', desc: '정확히 (0.00초)' },
+  { max: 2,        mult: 10, name: '신의 감각', color: '#ff8a3d',    desc: '±0.02초 이내' },
+  { max: 5,        mult: 5,  name: '초정밀',   color: '#c77dff',    desc: '±0.05초 이내' },
+  { max: 10,       mult: 2,  name: '정확',     color: '#5aa8ff',    desc: '±0.1초 이내' },
+  { max: 20,       mult: 1,  name: '본전',     color: 'var(--good)', desc: '±0.2초 이내' },
+  { max: Infinity, mult: 0,  name: '몰수',     color: 'var(--bad)',  desc: '±0.2초 초과' },
+];
+
+/* ===== 유틸 ===== */
+const $ = id => document.getElementById(id);
+const won = n => n.toLocaleString('ko-KR') + '원';
+const sec = cs => (cs/100).toFixed(2) + '초';
+const signed = cs => (cs>0?'+':cs<0?'−':'±') + (Math.abs(cs)/100).toFixed(2) + '초';
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const lsGet = k => { try{ return localStorage.getItem(k); }catch(e){ return null; } };
+const lsSet = (k,v) => { try{ v===null ? localStorage.removeItem(k) : localStorage.setItem(k,v); }catch(e){} };
+function randTarget(){ return MIN_T + Math.floor(Math.random() * (MAX_T - MIN_T + 1)); }
+function freshState(name){ return { name, money:START_MONEY, peak:START_MONEY, best:null, rounds:0, bankrupts:0, target:randTarget(), hist:[] }; }
+
+function base32(bytes){
+  const A = 'abcdefghijklmnopqrstuvwxyz234567'; let bits = 0, val = 0, out = '';
+  for(const b of bytes){ val = (val << 8) | b; bits += 8;
+    while(bits >= 5){ out += A[(val >>> (bits-5)) & 31]; bits -= 5; } val &= (1 << bits) - 1; }
+  if(bits > 0) out += A[(val << (5-bits)) & 31];
+  return out;
+}
+const emailOf = name => 'u' + base32(new TextEncoder().encode(name.toLowerCase())) + EMAIL_DOMAIN;
+
+/* ===== Firebase (REST 방식: 파일로 열어도 동작) ===== */
+const CFG = FIREBASE_CONFIG;
+const ONLINE = !!(CFG.apiKey && CFG.projectId);
+const DOCS = `https://firestore.googleapis.com/v1/projects/${CFG.projectId}/databases/(default)/documents`;
+let session = null;   // { uid, idToken, refreshToken, exp }
+
+class FbError extends Error { constructor(code, msg){ super(msg || code); this.code = code; } }
+
+async function callJson(url, opts){
+  let res;
+  try{ res = await fetch(url, opts); }
+  catch(e){ throw new FbError('network', '인터넷 연결을 확인해 주세요'); }
+  let body = null; try{ body = await res.json(); }catch(e){}
+  if(!res.ok){
+    const m = body && body.error ? String(body.error.message || '') : '';
+    const st = body && body.error && body.error.status;
+    const first = m.split(' ')[0];
+    const code = /^[A-Z_]+$/.test(first) ? first : (st || ('HTTP_' + res.status));
+    throw new FbError(code, m || code);
+  }
+  return body;
+}
+async function authCall(kind, email, password){
+  const d = await callJson(`https://identitytoolkit.googleapis.com/v1/accounts:${kind}?key=${CFG.apiKey}`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ email, password, returnSecureToken:true })
+  });
+  session = { uid:d.localId, idToken:d.idToken, refreshToken:d.refreshToken, exp: Date.now() + (Number(d.expiresIn)||3600)*1000 - 60000 };
+  return session;
+}
+async function refreshSession(refreshToken){
+  const d = await callJson(`https://securetoken.googleapis.com/v1/token?key=${CFG.apiKey}`, {
+    method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body: 'grant_type=refresh_token&refresh_token=' + encodeURIComponent(refreshToken)
+  });
+  session = { uid:d.user_id, idToken:d.id_token, refreshToken:d.refresh_token, exp: Date.now() + (Number(d.expires_in)||3600)*1000 - 60000 };
+  return session;
+}
+async function token(){
+  if(!session) throw new FbError('NO_SESSION');
+  if(Date.now() > session.exp) await refreshSession(session.refreshToken);
+  return session.idToken;
+}
+
+// JS 값 ↔ Firestore 값
+function toFs(v){
+  if(v === null || v === undefined) return { nullValue:null };
+  if(typeof v === 'boolean') return { booleanValue:v };
+  if(typeof v === 'number') return Number.isInteger(v) ? { integerValue:String(v) } : { doubleValue:v };
+  if(typeof v === 'string') return { stringValue:v };
+  if(Array.isArray(v)) return { arrayValue:{ values: v.map(toFs) } };
+  const fields = {}; for(const k in v) fields[k] = toFs(v[k]); return { mapValue:{ fields } };
+}
+function fromFs(x){
+  if(!x) return null;
+  if('integerValue' in x) return Number(x.integerValue);
+  if('doubleValue' in x) return Number(x.doubleValue);
+  if('stringValue' in x) return x.stringValue;
+  if('booleanValue' in x) return x.booleanValue;
+  if('nullValue' in x) return null;
+  if('arrayValue' in x) return (x.arrayValue.values || []).map(fromFs);
+  if('mapValue' in x){ const o = {}; const f = x.mapValue.fields || {}; for(const k in f) o[k] = fromFs(f[k]); return o; }
+  return null;
+}
+const docToObj = d => { const o = {}; const f = d.fields || {}; for(const k in f) o[k] = fromFs(f[k]); return o; };
+
+async function getPlayer(uid){
+  try{ return docToObj(await callJson(`${DOCS}/players/${uid}`)); }
+  catch(e){ if(e.code==='NOT_FOUND' || e.message.includes('not found') || e.code==='HTTP_404') return null; throw e; }
+}
+async function putPlayer(uid, obj){
+  const fields = {}; for(const k in obj) fields[k] = toFs(obj[k]);
+  await callJson(`${DOCS}/players/${uid}`, {
+    method:'PATCH', headers:{'Content-Type':'application/json', 'Authorization':'Bearer ' + await token()},
+    body: JSON.stringify({ fields })
+  });
+}
+async function listPlayers(){
+  const mask = ['name','money','peak','updatedAt'].map(f => 'mask.fieldPaths=' + f).join('&');
+  const d = await callJson(`${DOCS}/players?pageSize=300&${mask}`);
+  return (d.documents || []).map(doc => ({ _id: doc.name.split('/').pop(), ...docToObj(doc) }));
+}
+
+/* ===== 상태 ===== */
+let me = null;               // { uid, name, guest }
+let S = null;
+let phase = 'auth';
+let t0 = 0, curBet = 0;
+let sortKey = 'money';
+let players = [];
+let authMode = 'login';
+let rankLoaded = false;
+
+function show(id){
+  ['auth','bet','run','result','over'].forEach(s => $(s).classList.toggle('hidden', s!==id));
+  const inGame = id !== 'auth';
+  $('meBar').classList.toggle('hidden', !inGame);
+  $('moneyBox').classList.toggle('hidden', !inGame);
+  $('histCard').classList.toggle('hidden', !inGame);
+  phase = id;
+}
+function renderTop(){
+  if(!S) return;
+  $('money').textContent = won(S.money);
+  $('targetBet').textContent = sec(S.target);
+  const r = S.rounds+'판', p = won(S.peak), b = S.best===null ? '-' : (S.best/100).toFixed(2)+'초';
+  $('sRounds').textContent = $('sRounds2').textContent = r;
+  $('sPeak').textContent = $('sPeak2').textContent = p;
+  $('sBest').textContent = $('sBest2').textContent = b;
+  renderHist();
+}
+function renderTable(){
+  $('payTable').innerHTML = TIERS.map(t =>
+    `<tr><td style="color:${t.color}">${t.name}</td><td>${t.desc}</td><td style="color:${t.color}">x${t.mult}</td></tr>`).join('');
+}
+function renderHist(){
+  if(!S.hist.length){ $('histWrap').innerHTML = '<div class="empty">아직 기록이 없어요</div>'; return; }
+  $('histWrap').innerHTML = '<table class="hist">' + S.hist.map(h => {
+    const t = TIERS[h.tier] || TIERS[5]; const net = h.payout - h.bet;
+    return `<tr><td>${sec(h.target)}</td><td>${sec(h.time)}</td><td>${signed(h.time-h.target)}</td>
+      <td style="color:${t.color}">x${t.mult}</td>
+      <td style="color:${net>0?'var(--good)':net<0?'var(--bad)':'var(--sub)'}">${net>0?'+':''}${net.toLocaleString('ko-KR')}</td></tr>`;
+  }).join('') + '</table>';
+}
+
+/* ===== 저장 (한 번에 하나씩, 최신 상태만) ===== */
+let writing = false, pending = false;
+async function save(){
+  if(!me) return;
+  if(me.guest){ lsSet('timingBet_guest', JSON.stringify(S)); return; }
+  pending = true;
+  if(writing) return;
+  writing = true;
+  while(pending){
+    pending = false;
+    try{
+      await putPlayer(me.uid, { ...S, hist: S.hist.slice(), updatedAt: Date.now() });
+      updateMine();
+    }catch(e){ console.warn('저장 실패', e); setLive('저장 실패', true); }
+  }
+  writing = false;
+}
+// 내 기록을 랭킹에 바로 반영 (다음 갱신을 기다리지 않음)
+function updateMine(){
+  if(!me || me.guest) return;
+  const row = { _id: me.uid, ...S, updatedAt: Date.now() };
+  const i = players.findIndex(p => p._id === me.uid);
+  if(i >= 0) players[i] = row; else players.push(row);
+  renderRank();
+}
+
+/* ===== 계정 ===== */
+function setAuthMode(m){
+  authMode = m;
+  $('tabLogin').setAttribute('aria-selected', m==='login');
+  $('tabSignup').setAttribute('aria-selected', m==='signup');
+  $('authPw2').classList.toggle('hidden', m!=='signup');
+  $('authBtn').textContent = m==='login' ? '로그인' : '가입하고 시작';
+  $('authErr').textContent = '';
+}
+$('tabLogin').addEventListener('click', () => setAuthMode('login'));
+$('tabSignup').addEventListener('click', () => setAuthMode('signup'));
+function authError(msg){ $('authErr').textContent = msg; $('authBtn').disabled = false; }
+
+function errMsg(e){
+  const c = e && e.code || '';
+  if(c==='network') return '인터넷 연결을 확인해 주세요';
+  if(c==='EMAIL_EXISTS') return '이미 있는 아이디예요';
+  if(['INVALID_LOGIN_CREDENTIALS','INVALID_PASSWORD','EMAIL_NOT_FOUND','INVALID_EMAIL'].includes(c)) return '아이디 또는 비밀번호가 틀렸어요';
+  if(c==='WEAK_PASSWORD') return '비밀번호는 6자 이상이어야 해요';
+  if(c==='TOO_MANY_ATTEMPTS_TRY_LATER') return '시도가 너무 많아요. 잠시 뒤 다시 해 보세요';
+  if(c==='OPERATION_NOT_ALLOWED' || c==='CONFIGURATION_NOT_FOUND') return 'Firebase에서 이메일/비밀번호 로그인이 꺼져 있어요';
+  if(c==='Missing' || c==='PERMISSION_DENIED' || String(e.message).includes('permission')) return 'Firestore 보안 규칙이 저장을 막고 있어요';
+  if(c==='API_KEY_INVALID' || String(e.message).includes('API key')) return 'Firebase 설정값(apiKey)이 올바르지 않아요';
+  return '서버 오류: ' + (e && e.message || '알 수 없음');
+}
+
+$('authForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  if(!ONLINE){ authError('랭킹 서버가 설정되지 않았어요. 게스트로 해 보세요.'); return; }
+  const name = $('authId').value.trim(), pw = $('authPw').value;
+  if(!/^[가-힣a-zA-Z0-9_]{2,12}$/.test(name)) return authError('아이디는 2~12자의 한글·영문·숫자·_ 만 쓸 수 있어요');
+  if(pw.length < 6) return authError('비밀번호는 6자 이상이어야 해요');
+  if(authMode==='signup' && pw !== $('authPw2').value) return authError('비밀번호 확인이 일치하지 않아요');
+  $('authBtn').disabled = true; $('authErr').textContent = '';
+  try{
+    if(authMode==='signup'){
+      await authCall('signUp', emailOf(name), pw);
+      S = freshState(name);
+      await putPlayer(session.uid, { ...S, updatedAt: Date.now() });
+    }else{
+      await authCall('signInWithPassword', emailOf(name), pw);
+      const d = await getPlayer(session.uid);
+      if(d && typeof d.name === 'string') S = normalize(d, d.name);
+      else { S = freshState(name); await putPlayer(session.uid, { ...S, updatedAt: Date.now() }); }
+    }
+    me = { uid: session.uid, name: S.name, guest:false };
+    lsSet('timingBet_session', JSON.stringify({ rt: session.refreshToken }));
+    $('authPw').value = $('authPw2').value = '';
+    enterGame();
+    updateMine();
+  }catch(err){
+    console.warn(err);
+    authError(errMsg(err));
+  }
+});
+
+function normalize(d, name){
+  const f = freshState(name);
+  const int = v => Number.isFinite(v) ? Math.floor(v) : null;
+  return {
+    name,
+    money: int(d.money) ?? f.money, peak: int(d.peak) ?? f.peak,
+    best: int(d.best), rounds: int(d.rounds) ?? 0, bankrupts: int(d.bankrupts) ?? 0,
+    target: int(d.target) ?? f.target, hist: Array.isArray(d.hist) ? d.hist.slice(0,10) : [],
+  };
+}
+
+$('guestBtn').addEventListener('click', () => {
+  let g = null; try{ g = JSON.parse(lsGet('timingBet_guest')); }catch(e){}
+  S = g && typeof g.money==='number' ? normalize(g, '게스트') : freshState('게스트');
+  me = { uid:null, name:'게스트', guest:true };
+  enterGame();
+});
+$('logoutBtn').addEventListener('click', () => {
+  if(phase==='run') return;
+  if(me && !me.guest){ session = null; lsSet('timingBet_session', null); }
+  me = null; S = null; $('betInput').value = '';
+  show('auth'); renderRank();
+});
+function enterGame(){
+  $('authBtn').disabled = false;
+  $('meName').textContent = me.name;
+  $('meBadge').textContent = me.guest ? '랭킹 미반영' : '랭킹 참가 중';
+  renderTop();
+  show(S.money < BANKRUPT_LINE ? 'over' : 'bet');
+  renderRank();
+}
+
+/* ===== 베팅 ===== */
+const betInput = $('betInput');
+betInput.addEventListener('input', () => {
+  const clean = betInput.value.replace(/[^\d]/g,'');
+  if(clean !== betInput.value) betInput.value = clean;
+  $('betErr').textContent = '';
+});
+document.querySelectorAll('.quick button').forEach(b => b.addEventListener('click', () => {
+  const q = b.dataset.q, cur = parseInt(betInput.value||'0',10) || 0;
+  let v;
+  if(q==='half') v = Math.floor(S.money/2);
+  else if(q==='all') v = S.money;
+  else if(q==='clear') v = '';
+  else v = Math.min(S.money, cur + Number(q));
+  betInput.value = v; $('betErr').textContent = '';
+}));
+function startRound(){
+  if(phase!=='bet') return;
+  const raw = betInput.value.trim();
+  if(!/^\d+$/.test(raw)){ $('betErr').textContent = '베팅 금액을 정수로 입력하세요'; return; }
+  const v = parseInt(raw,10);
+  if(v < 1){ $('betErr').textContent = '1원 이상 베팅하세요'; return; }
+  if(v > S.money){ $('betErr').textContent = '자본금보다 많이 걸 수 없어요'; return; }
+  curBet = v;
+  $('money').textContent = won(S.money - v);
+  $('targetRun').textContent = sec(S.target);
+  betInput.blur();
+  show('run');
+  t0 = performance.now();
+}
+$('startBtn').addEventListener('click', startRound);
+betInput.addEventListener('keydown', e => { if(e.key==='Enter'){ e.preventDefault(); startRound(); } });
+
+/* ===== 스톱 ===== */
+function stopRound(){
+  if(phase!=='run') return;
+  const elapsed = performance.now() - t0;
+  const timeCs = Math.round(elapsed / 10);
+  const errCs = Math.abs(timeCs - S.target);
+  const tierIdx = TIERS.findIndex(t => errCs <= t.max);
+  const tier = TIERS[tierIdx];
+  const payout = curBet * tier.mult;
+  S.money = S.money - curBet + payout;
+  S.rounds++;
+  S.peak = Math.max(S.peak, S.money);
+  S.best = S.best===null ? errCs : Math.min(S.best, errCs);
+  S.hist.unshift({ target:S.target, time:timeCs, tier:tierIdx, bet:curBet, payout });
+  S.hist = S.hist.slice(0,10);
+
+  $('rTarget').textContent = sec(S.target);
+  $('rTime').textContent = sec(timeCs);
+  $('rDiff').textContent = signed(timeCs - S.target);
+  $('rDiff').style.color = tier.color;
+  $('rTier').textContent = `${tier.name}  x${tier.mult}`;
+  $('rTier').style.color = tier.color;
+  const net = payout - curBet;
+  $('rGain').textContent = net>0 ? `+${won(net)}` : net<0 ? `−${won(-net)}` : '본전 (±0원)';
+  $('rGain').style.color = net>0 ? 'var(--good)' : net<0 ? 'var(--bad)' : 'var(--sub)';
+  const broke = S.money < BANKRUPT_LINE;
+  if(broke) S.bankrupts++;
+  $('nextBtn').textContent = broke ? '파산 확인' : '다음 판';
+  S.target = randTarget();
+  save();
+  renderTop();
+  show('result');
+}
+$('run').addEventListener('pointerdown', e => { e.preventDefault(); stopRound(); });
+$('nextBtn').addEventListener('click', nextRound);
+function nextRound(){
+  if(S.money < BANKRUPT_LINE){ show('over'); return; }
+  betInput.value = Math.min(curBet, S.money);
+  show('bet');
+}
+document.addEventListener('keydown', e => {
+  if(phase==='run' && (e.code==='Space' || e.key==='Enter')){ e.preventDefault(); stopRound(); }
+  else if(phase==='result' && (e.key==='Enter' || e.code==='Space')){ e.preventDefault(); nextRound(); }
+});
+
+/* ===== 다시 시작 ===== */
+function restartMoney(){ S.money = START_MONEY; S.hist = []; S.target = randTarget(); save(); betInput.value = ''; renderTop(); show('bet'); }
+$('restartBtn').addEventListener('click', restartMoney);
+$('resetBtn').addEventListener('click', () => { if(phase==='run') return; $('resetWrap').classList.add('hidden'); $('resetConfirm').classList.remove('hidden'); });
+$('resetNo').addEventListener('click', () => { $('resetConfirm').classList.add('hidden'); $('resetWrap').classList.remove('hidden'); });
+$('resetYes').addEventListener('click', () => { $('resetConfirm').classList.add('hidden'); $('resetWrap').classList.remove('hidden'); restartMoney(); });
+
+/* ===== 랭킹 ===== */
+function setSort(k){
+  sortKey = k;
+  $('sortMoney').setAttribute('aria-pressed', k==='money');
+  $('sortPeak').setAttribute('aria-pressed', k==='peak');
+  renderRank();
+}
+$('sortMoney').addEventListener('click', () => setSort('money'));
+$('sortPeak').addEventListener('click', () => setSort('peak'));
+function setLive(text, off){ $('liveDot').textContent = text; $('liveDot').classList.toggle('off', !!off); }
+
+function renderRank(){
+  const list = $('rankList');
+  if(!ONLINE){ list.innerHTML = '<li class="empty">랭킹 서버가 설정되지 않았어요</li>'; $('myRank').classList.add('hidden'); return; }
+  if(!rankLoaded && !players.length) return;
+  const sorted = players.filter(p => typeof p.name==='string' && Number.isFinite(p[sortKey]))
+    .sort((a,b) => b[sortKey]-a[sortKey] || (a.updatedAt||0)-(b.updatedAt||0));
+  if(!sorted.length){ list.innerHTML = '<li class="empty">아직 아무도 없어요. 가입하면 1등!</li>'; $('myRank').classList.add('hidden'); return; }
+  const myId = me && !me.guest ? me.uid : null;
+  list.innerHTML = sorted.slice(0,20).map((p,i) => {
+    const n = i+1;
+    const sub = sortKey==='money' && p.money < BANKRUPT_LINE ? '파산' : '';
+    return `<li class="${p._id===myId?'mine':''}"><span class="no ${n<=3?'g'+n:''}">${n}</span>
+      <span class="nm">${esc(p.name)}${sub?`<small>${sub}</small>`:''}</span><span class="val">${won(p[sortKey])}</span></li>`;
+  }).join('');
+  const idx = myId ? sorted.findIndex(p => p._id===myId) : -1;
+  const box = $('myRank');
+  if(idx >= 0){ box.textContent = `내 순위 ${idx+1}위 / ${sorted.length}명`; box.classList.remove('hidden'); }
+  else box.classList.add('hidden');
+}
+
+let polling = false;
+async function pollRank(){
+  if(polling || document.hidden) return;
+  polling = true;
+  try{
+    const list = await listPlayers();
+    // 내 기록은 방금 저장한 최신 값을 우선
+    if(me && !me.guest && S){
+      const i = list.findIndex(p => p._id === me.uid);
+      const mine = { _id: me.uid, ...S };
+      if(i >= 0) list[i] = { ...list[i], ...mine }; else list.push(mine);
+    }
+    players = list; rankLoaded = true;
+    lsSet('timingBet_rankCache', JSON.stringify(list.map(p => ({ _id:p._id, name:p.name, money:p.money, peak:p.peak, updatedAt:p.updatedAt })).slice(0,300)));
+    setLive('실시간', false);
+    renderRank();
+  }catch(e){
+    console.warn(e);
+    setLive('연결 끊김', true);
+    if(!rankLoaded){
+      const why = e.code==='network' ? '인터넷 연결을 확인해 주세요'
+        : (e.code==='PERMISSION_DENIED' || String(e.message).includes('ermission')) ? 'Firestore 규칙이 읽기를 막고 있어요'
+        : (e.code==='NOT_FOUND' || e.code==='HTTP_404') ? 'Firestore 데이터베이스를 찾을 수 없어요'
+        : '오류: ' + esc(e.message || e.code);
+      $('rankList').innerHTML = `<li class="empty">랭킹을 읽지 못했어요. ${why}</li>`;
+    }
+  }
+  polling = false;
+}
+
+/* ===== 시작 ===== */
+renderTable();
+setAuthMode('login');
+show('auth');
+
+(async function init(){
+  if(!ONLINE){
+    $('dbNote').textContent = '랭킹 서버 설정이 비어 있어요. 파일 맨 위 FIREBASE_CONFIG를 채워 주세요. 지금은 게스트로만 할 수 있어요.';
+    setLive('오프라인', true); renderRank(); return;
+  }
+  $('dbNote').textContent = '다른 곳에서 쓰는 비밀번호는 재사용하지 마세요.';
+  try{ const c = JSON.parse(lsGet('timingBet_rankCache')); if(Array.isArray(c) && c.length){ players = c; rankLoaded = true; setLive('갱신 중', true); renderRank(); } }catch(e){}
+  pollRank();
+  setInterval(pollRank, POLL_MS);
+  document.addEventListener('visibilitychange', () => { if(!document.hidden) pollRank(); });
+
+  // 이전 로그인 이어하기
+  let saved = null; try{ saved = JSON.parse(lsGet('timingBet_session')); }catch(e){}
+  if(saved && saved.rt){
+    try{
+      await refreshSession(saved.rt);
+      const d = await getPlayer(session.uid);
+      if(d && typeof d.name==='string' && phase==='auth'){
+        S = normalize(d, d.name);
+        me = { uid: session.uid, name: d.name, guest:false };
+        lsSet('timingBet_session', JSON.stringify({ rt: session.refreshToken }));
+        enterGame();
+      }
+    }catch(e){ console.warn(e); session = null; }
+  }
+})();
+
+</script>
+</body>
+</html>
