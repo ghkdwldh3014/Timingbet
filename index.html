@@ -33,8 +33,8 @@ service cloud.firestore {
         && request.resource.data.name is string
         && request.resource.data.name.size() <= 12
         && (resource == null || request.resource.data.name == resource.data.name)
-        && request.resource.data.money is int && request.resource.data.money >= 0
-        && request.resource.data.peak is int && request.resource.data.peak >= 0;
+        && request.resource.data.money is string && request.resource.data.money.matches('[0-9]{1,300}')
+        && request.resource.data.peak is string && request.resource.data.peak.matches('[0-9]{1,300}');
       allow delete: if false;
     }
   }
@@ -132,11 +132,18 @@ service cloud.firestore {
   .rank .nm small{color:var(--sub);font-size:11px;margin-left:4px}
   .rank .val{font-weight:800}
   .rank li.empty{display:block;border-bottom:none}
+  .preview{text-align:right;color:var(--accent);font-size:13px;min-height:18px;margin-top:6px;font-variant-numeric:tabular-nums}
+  .money b{word-break:keep-all}
   .myrank{margin-top:10px;font-size:13px;color:var(--sub);text-align:center}
 </style>
 </head>
 <body>
 <div class="app">
+  <div id="updateBar" class="card hidden" style="padding:12px 16px;border-color:var(--accent)">
+    <div style="font-size:14px;font-weight:700;color:var(--accent);margin-bottom:4px">새 버전이 나왔어요</div>
+    <div class="hint">이 파일은 옛 버전이라 기록이 저장되지 않을 수 있어요. 아래 주소로 접속해 주세요.</div>
+    <a id="updateLink" href="#" style="color:var(--accent);font-size:14px;word-break:break-all"></a>
+  </div>
   <header>
     <h1>타이밍 <span>베팅</span></h1>
     <div class="money hidden" id="moneyBox"><small>자본금</small><b id="money">100,000원</b></div>
@@ -170,6 +177,7 @@ service cloud.firestore {
     <div class="label">이번 목표 시간</div>
     <div class="target" id="targetBet">0.00초</div>
     <input id="betInput" type="text" inputmode="numeric" placeholder="베팅 금액 (원)" autocomplete="off">
+    <div id="betPreview" class="preview"></div>
     <div class="quick">
       <button data-q="1000">+1천</button>
       <button data-q="10000">+1만</button>
@@ -252,12 +260,18 @@ service cloud.firestore {
 </div>
 
 <script>
+/* ===== 버전 · 배포 주소 ===== */
+const APP_VERSION = 2;                                        // 고칠 때마다 1씩 올리기
+const SITE_URL = 'https://ghkdwldh3014.github.io/Timingbet/';  // 최신 버전이 올라가 있는 주소
+
 /* ===== 설정 ===== */
-const START_MONEY = 100000;
-const BANKRUPT_LINE = 2000;
+const START_MONEY = 100000n;
+const BANKRUPT_LINE = 2000n;
+const MAX_DIGITS = 300;                   // 저장 가능한 최대 자릿수
+const MAX_MONEY = 10n ** BigInt(MAX_DIGITS) - 1n;
 const MIN_T = 100, MAX_T = 500;
-const POLL_MS = 5000;                     // 랭킹 자동 갱신 간격
-const EMAIL_DOMAIN = '@timingbet.game';   // 아이디를 내부용 가짜 이메일로 바꿀 때 사용 (인증 메일 없음)
+const POLL_MS = 5000;
+const EMAIL_DOMAIN = '@timingbet.game';
 
 const TIERS = [
   { max: 0,        mult: 20, name: '완벽!!',   color: 'var(--gold)', desc: '정확히 (0.00초)' },
@@ -268,9 +282,36 @@ const TIERS = [
   { max: Infinity, mult: 0,  name: '몰수',     color: 'var(--bad)',  desc: '±0.2초 초과' },
 ];
 
+/* ===== 큰 수 (BigInt) ===== */
+const UNITS = ['', '만', '억', '조', '경', '해', '자', '양', '구', '간', '정', '재', '극', '항하사', '아승기', '나유타', '불가사의', '무량대수'];
+const big = v => {
+  if(typeof v === 'bigint') return v;
+  if(typeof v === 'string' && /^\d{1,400}$/.test(v)) return BigInt(v);
+  if(typeof v === 'number' && Number.isFinite(v) && v >= 0) return BigInt(Math.floor(v));
+  return null;
+};
+const comma = s => s.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+// 1억 2,345만원 처럼 큰 단위 두 개까지 표시
+function won(v){
+  let n = big(v); if(n === null) return '-';
+  const neg = n < 0n; if(neg) n = -n;
+  if(n < 10000n) return (neg?'-':'') + comma(n.toString()) + '원';
+  const groups = []; let t = n;
+  while(t > 0n && groups.length < UNITS.length - 1){ groups.push(t % 10000n); t /= 10000n; }
+  if(t > 0n) groups.push(t);                    // 무량대수보다 큰 부분은 마지막 단위에 몰아서
+  const parts = [];
+  for(let i = groups.length - 1; i >= 0 && parts.length < 2; i--){
+    if(groups[i] === 0n){ if(parts.length) break; continue; }
+    parts.push(comma(groups[i].toString()) + UNITS[Math.min(i, UNITS.length - 1)]);
+  }
+  return (neg?'-':'') + parts.join(' ') + '원';
+}
+const minBig = (a,b) => a < b ? a : b;
+const maxBig = (a,b) => a > b ? a : b;
+const cmpBig = (a,b) => a > b ? 1 : a < b ? -1 : 0;
+
 /* ===== 유틸 ===== */
 const $ = id => document.getElementById(id);
-const won = n => n.toLocaleString('ko-KR') + '원';
 const sec = cs => (cs/100).toFixed(2) + '초';
 const signed = cs => (cs>0?'+':cs<0?'−':'±') + (Math.abs(cs)/100).toFixed(2) + '초';
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -288,14 +329,36 @@ function base32(bytes){
 }
 const emailOf = name => 'u' + base32(new TextEncoder().encode(name.toLowerCase())) + EMAIL_DOMAIN;
 
-/* ===== Firebase (REST 방식: 파일로 열어도 동작) ===== */
+// 저장용: 돈은 글자(숫자 문자열)로 바꿔서 저장 → 아무리 커져도 정확
+function serialize(st){
+  return {
+    name: st.name, money: st.money.toString(), peak: st.peak.toString(),
+    best: st.best, rounds: st.rounds, bankrupts: st.bankrupts, target: st.target,
+    hist: st.hist.map(h => ({ target:h.target, time:h.time, tier:h.tier, bet:h.bet.toString(), payout:h.payout.toString() })),
+  };
+}
+function normalize(d, name){
+  const f = freshState(name);
+  const int = v => Number.isFinite(v) ? Math.floor(v) : null;
+  const hist = Array.isArray(d.hist) ? d.hist.slice(0,10).map(h => ({
+    target: int(h && h.target) ?? 0, time: int(h && h.time) ?? 0, tier: int(h && h.tier) ?? 5,
+    bet: big(h && h.bet) ?? 0n, payout: big(h && h.payout) ?? 0n,
+  })) : [];
+  return {
+    name,
+    money: big(d.money) ?? f.money, peak: big(d.peak) ?? f.peak,
+    best: int(d.best), rounds: int(d.rounds) ?? 0, bankrupts: int(d.bankrupts) ?? 0,
+    target: int(d.target) ?? f.target, hist,
+  };
+}
+
+/* ===== Firebase (REST 방식) ===== */
 const CFG = FIREBASE_CONFIG;
 const ONLINE = !!(CFG.apiKey && CFG.projectId);
 const DOCS = `https://firestore.googleapis.com/v1/projects/${CFG.projectId}/databases/(default)/documents`;
-let session = null;   // { uid, idToken, refreshToken, exp }
+let session = null;
 
 class FbError extends Error { constructor(code, msg){ super(msg || code); this.code = code; } }
-
 async function callJson(url, opts){
   let res;
   try{ res = await fetch(url, opts); }
@@ -331,12 +394,11 @@ async function token(){
   if(Date.now() > session.exp) await refreshSession(session.refreshToken);
   return session.idToken;
 }
-
-// JS 값 ↔ Firestore 값
 function toFs(v){
   if(v === null || v === undefined) return { nullValue:null };
   if(typeof v === 'boolean') return { booleanValue:v };
-  if(typeof v === 'number') return Number.isInteger(v) ? { integerValue:String(v) } : { doubleValue:v };
+  if(typeof v === 'bigint') return { stringValue:v.toString() };
+  if(typeof v === 'number') return Number.isSafeInteger(v) ? { integerValue:String(v) } : { doubleValue:v };
   if(typeof v === 'string') return { stringValue:v };
   if(Array.isArray(v)) return { arrayValue:{ values: v.map(toFs) } };
   const fields = {}; for(const k in v) fields[k] = toFs(v[k]); return { mapValue:{ fields } };
@@ -356,9 +418,10 @@ const docToObj = d => { const o = {}; const f = d.fields || {}; for(const k in f
 
 async function getPlayer(uid){
   try{ return docToObj(await callJson(`${DOCS}/players/${uid}`)); }
-  catch(e){ if(e.code==='NOT_FOUND' || e.message.includes('not found') || e.code==='HTTP_404') return null; throw e; }
+  catch(e){ if(e.code==='NOT_FOUND' || e.code==='HTTP_404') return null; throw e; }
 }
-async function putPlayer(uid, obj){
+async function putPlayer(uid, st){
+  const obj = { ...serialize(st), updatedAt: Date.now() };
   const fields = {}; for(const k in obj) fields[k] = toFs(obj[k]);
   await callJson(`${DOCS}/players/${uid}`, {
     method:'PATCH', headers:{'Content-Type':'application/json', 'Authorization':'Bearer ' + await token()},
@@ -368,14 +431,14 @@ async function putPlayer(uid, obj){
 async function listPlayers(){
   const mask = ['name','money','peak','updatedAt'].map(f => 'mask.fieldPaths=' + f).join('&');
   const d = await callJson(`${DOCS}/players?pageSize=300&${mask}`);
-  return (d.documents || []).map(doc => ({ _id: doc.name.split('/').pop(), ...docToObj(doc) }));
+  return (d.documents || []).map(doc => toRankRow(doc.name.split('/').pop(), docToObj(doc)));
 }
+const toRankRow = (id, o) => ({ _id:id, name:o.name, money:big(o.money), peak:big(o.peak), updatedAt:o.updatedAt || 0 });
 
 /* ===== 상태 ===== */
-let me = null;               // { uid, name, guest }
-let S = null;
+let me = null, S = null;
 let phase = 'auth';
-let t0 = 0, curBet = 0;
+let t0 = 0, curBet = 0n;
 let sortKey = 'money';
 let players = [];
 let authMode = 'login';
@@ -409,31 +472,28 @@ function renderHist(){
     const t = TIERS[h.tier] || TIERS[5]; const net = h.payout - h.bet;
     return `<tr><td>${sec(h.target)}</td><td>${sec(h.time)}</td><td>${signed(h.time-h.target)}</td>
       <td style="color:${t.color}">x${t.mult}</td>
-      <td style="color:${net>0?'var(--good)':net<0?'var(--bad)':'var(--sub)'}">${net>0?'+':''}${net.toLocaleString('ko-KR')}</td></tr>`;
+      <td style="color:${net>0n?'var(--good)':net<0n?'var(--bad)':'var(--sub)'}">${net>0n?'+':''}${won(net)}</td></tr>`;
   }).join('') + '</table>';
 }
 
-/* ===== 저장 (한 번에 하나씩, 최신 상태만) ===== */
+/* ===== 저장 ===== */
 let writing = false, pending = false;
 async function save(){
   if(!me) return;
-  if(me.guest){ lsSet('timingBet_guest', JSON.stringify(S)); return; }
+  if(me.guest){ lsSet('timingBet_guest', JSON.stringify(serialize(S))); return; }
   pending = true;
   if(writing) return;
   writing = true;
   while(pending){
     pending = false;
-    try{
-      await putPlayer(me.uid, { ...S, hist: S.hist.slice(), updatedAt: Date.now() });
-      updateMine();
-    }catch(e){ console.warn('저장 실패', e); setLive('저장 실패', true); }
+    try{ await putPlayer(me.uid, S); updateMine(); setLive('실시간', false); }
+    catch(e){ console.warn('저장 실패', e); setLive('저장 실패', true); }
   }
   writing = false;
 }
-// 내 기록을 랭킹에 바로 반영 (다음 갱신을 기다리지 않음)
 function updateMine(){
   if(!me || me.guest) return;
-  const row = { _id: me.uid, ...S, updatedAt: Date.now() };
+  const row = { _id: me.uid, name:S.name, money:S.money, peak:S.peak, updatedAt: Date.now() };
   const i = players.findIndex(p => p._id === me.uid);
   if(i >= 0) players[i] = row; else players.push(row);
   renderRank();
@@ -451,7 +511,6 @@ function setAuthMode(m){
 $('tabLogin').addEventListener('click', () => setAuthMode('login'));
 $('tabSignup').addEventListener('click', () => setAuthMode('signup'));
 function authError(msg){ $('authErr').textContent = msg; $('authBtn').disabled = false; }
-
 function errMsg(e){
   const c = e && e.code || '';
   if(c==='network') return '인터넷 연결을 확인해 주세요';
@@ -460,11 +519,10 @@ function errMsg(e){
   if(c==='WEAK_PASSWORD') return '비밀번호는 6자 이상이어야 해요';
   if(c==='TOO_MANY_ATTEMPTS_TRY_LATER') return '시도가 너무 많아요. 잠시 뒤 다시 해 보세요';
   if(c==='OPERATION_NOT_ALLOWED' || c==='CONFIGURATION_NOT_FOUND') return 'Firebase에서 이메일/비밀번호 로그인이 꺼져 있어요';
-  if(c==='Missing' || c==='PERMISSION_DENIED' || String(e.message).includes('permission')) return 'Firestore 보안 규칙이 저장을 막고 있어요';
+  if(c==='PERMISSION_DENIED' || String(e.message).toLowerCase().includes('permission')) return 'Firestore 보안 규칙이 저장을 막고 있어요 (규칙을 새 버전으로 바꿔 주세요)';
   if(c==='API_KEY_INVALID' || String(e.message).includes('API key')) return 'Firebase 설정값(apiKey)이 올바르지 않아요';
   return '서버 오류: ' + (e && e.message || '알 수 없음');
 }
-
 $('authForm').addEventListener('submit', async e => {
   e.preventDefault();
   if(!ONLINE){ authError('랭킹 서버가 설정되지 않았어요. 게스트로 해 보세요.'); return; }
@@ -477,45 +535,33 @@ $('authForm').addEventListener('submit', async e => {
     if(authMode==='signup'){
       await authCall('signUp', emailOf(name), pw);
       S = freshState(name);
-      await putPlayer(session.uid, { ...S, updatedAt: Date.now() });
+      await putPlayer(session.uid, S);
     }else{
       await authCall('signInWithPassword', emailOf(name), pw);
       const d = await getPlayer(session.uid);
       if(d && typeof d.name === 'string') S = normalize(d, d.name);
-      else { S = freshState(name); await putPlayer(session.uid, { ...S, updatedAt: Date.now() }); }
+      else { S = freshState(name); await putPlayer(session.uid, S); }
     }
     me = { uid: session.uid, name: S.name, guest:false };
     lsSet('timingBet_session', JSON.stringify({ rt: session.refreshToken }));
     $('authPw').value = $('authPw2').value = '';
     enterGame();
-    updateMine();
+    save();          // 옛 형식(숫자)으로 저장된 기록을 새 형식으로 바로 바꿔 둠
   }catch(err){
     console.warn(err);
     authError(errMsg(err));
   }
 });
-
-function normalize(d, name){
-  const f = freshState(name);
-  const int = v => Number.isFinite(v) ? Math.floor(v) : null;
-  return {
-    name,
-    money: int(d.money) ?? f.money, peak: int(d.peak) ?? f.peak,
-    best: int(d.best), rounds: int(d.rounds) ?? 0, bankrupts: int(d.bankrupts) ?? 0,
-    target: int(d.target) ?? f.target, hist: Array.isArray(d.hist) ? d.hist.slice(0,10) : [],
-  };
-}
-
 $('guestBtn').addEventListener('click', () => {
   let g = null; try{ g = JSON.parse(lsGet('timingBet_guest')); }catch(e){}
-  S = g && typeof g.money==='number' ? normalize(g, '게스트') : freshState('게스트');
+  S = g && big(g.money) !== null ? normalize(g, '게스트') : freshState('게스트');
   me = { uid:null, name:'게스트', guest:true };
   enterGame();
 });
 $('logoutBtn').addEventListener('click', () => {
   if(phase==='run') return;
   if(me && !me.guest){ session = null; lsSet('timingBet_session', null); }
-  me = null; S = null; $('betInput').value = '';
+  me = null; S = null; $('betInput').value = ''; updatePreview();
   show('auth'); renderRank();
 });
 function enterGame(){
@@ -529,26 +575,33 @@ function enterGame(){
 
 /* ===== 베팅 ===== */
 const betInput = $('betInput');
+function readBet(){ const r = betInput.value.trim(); return /^\d{1,400}$/.test(r) ? BigInt(r) : null; }
+function updatePreview(){
+  const v = readBet();
+  $('betPreview').textContent = v !== null && v >= 10000n ? '= ' + won(v) : '';
+}
 betInput.addEventListener('input', () => {
-  const clean = betInput.value.replace(/[^\d]/g,'');
+  const clean = betInput.value.replace(/[^\d]/g,'').replace(/^0+(?=\d)/,'').slice(0, MAX_DIGITS);
   if(clean !== betInput.value) betInput.value = clean;
   $('betErr').textContent = '';
+  updatePreview();
 });
 document.querySelectorAll('.quick button').forEach(b => b.addEventListener('click', () => {
-  const q = b.dataset.q, cur = parseInt(betInput.value||'0',10) || 0;
+  const q = b.dataset.q, cur = readBet() ?? 0n;
   let v;
-  if(q==='half') v = Math.floor(S.money/2);
+  if(q==='half') v = S.money / 2n;
   else if(q==='all') v = S.money;
-  else if(q==='clear') v = '';
-  else v = Math.min(S.money, cur + Number(q));
-  betInput.value = v; $('betErr').textContent = '';
+  else if(q==='clear') v = null;
+  else v = minBig(S.money, cur + BigInt(q));
+  betInput.value = v === null ? '' : v.toString();
+  $('betErr').textContent = '';
+  updatePreview();
 }));
 function startRound(){
   if(phase!=='bet') return;
-  const raw = betInput.value.trim();
-  if(!/^\d+$/.test(raw)){ $('betErr').textContent = '베팅 금액을 정수로 입력하세요'; return; }
-  const v = parseInt(raw,10);
-  if(v < 1){ $('betErr').textContent = '1원 이상 베팅하세요'; return; }
+  const v = readBet();
+  if(v === null){ $('betErr').textContent = '베팅 금액을 정수로 입력하세요'; return; }
+  if(v < 1n){ $('betErr').textContent = '1원 이상 베팅하세요'; return; }
   if(v > S.money){ $('betErr').textContent = '자본금보다 많이 걸 수 없어요'; return; }
   curBet = v;
   $('money').textContent = won(S.money - v);
@@ -568,10 +621,10 @@ function stopRound(){
   const errCs = Math.abs(timeCs - S.target);
   const tierIdx = TIERS.findIndex(t => errCs <= t.max);
   const tier = TIERS[tierIdx];
-  const payout = curBet * tier.mult;
-  S.money = S.money - curBet + payout;
+  const payout = curBet * BigInt(tier.mult);
+  S.money = minBig(MAX_MONEY, S.money - curBet + payout);
   S.rounds++;
-  S.peak = Math.max(S.peak, S.money);
+  S.peak = maxBig(S.peak, S.money);
   S.best = S.best===null ? errCs : Math.min(S.best, errCs);
   S.hist.unshift({ target:S.target, time:timeCs, tier:tierIdx, bet:curBet, payout });
   S.hist = S.hist.slice(0,10);
@@ -583,8 +636,8 @@ function stopRound(){
   $('rTier').textContent = `${tier.name}  x${tier.mult}`;
   $('rTier').style.color = tier.color;
   const net = payout - curBet;
-  $('rGain').textContent = net>0 ? `+${won(net)}` : net<0 ? `−${won(-net)}` : '본전 (±0원)';
-  $('rGain').style.color = net>0 ? 'var(--good)' : net<0 ? 'var(--bad)' : 'var(--sub)';
+  $('rGain').textContent = net>0n ? `+${won(net)}` : net<0n ? `−${won(-net)}` : '본전 (±0원)';
+  $('rGain').style.color = net>0n ? 'var(--good)' : net<0n ? 'var(--bad)' : 'var(--sub)';
   const broke = S.money < BANKRUPT_LINE;
   if(broke) S.bankrupts++;
   $('nextBtn').textContent = broke ? '파산 확인' : '다음 판';
@@ -597,7 +650,8 @@ $('run').addEventListener('pointerdown', e => { e.preventDefault(); stopRound();
 $('nextBtn').addEventListener('click', nextRound);
 function nextRound(){
   if(S.money < BANKRUPT_LINE){ show('over'); return; }
-  betInput.value = Math.min(curBet, S.money);
+  betInput.value = minBig(curBet, S.money).toString();
+  updatePreview();
   show('bet');
 }
 document.addEventListener('keydown', e => {
@@ -606,7 +660,7 @@ document.addEventListener('keydown', e => {
 });
 
 /* ===== 다시 시작 ===== */
-function restartMoney(){ S.money = START_MONEY; S.hist = []; S.target = randTarget(); save(); betInput.value = ''; renderTop(); show('bet'); }
+function restartMoney(){ S.money = START_MONEY; S.hist = []; S.target = randTarget(); save(); betInput.value = ''; updatePreview(); renderTop(); show('bet'); }
 $('restartBtn').addEventListener('click', restartMoney);
 $('resetBtn').addEventListener('click', () => { if(phase==='run') return; $('resetWrap').classList.add('hidden'); $('resetConfirm').classList.remove('hidden'); });
 $('resetNo').addEventListener('click', () => { $('resetConfirm').classList.add('hidden'); $('resetWrap').classList.remove('hidden'); });
@@ -627,8 +681,8 @@ function renderRank(){
   const list = $('rankList');
   if(!ONLINE){ list.innerHTML = '<li class="empty">랭킹 서버가 설정되지 않았어요</li>'; $('myRank').classList.add('hidden'); return; }
   if(!rankLoaded && !players.length) return;
-  const sorted = players.filter(p => typeof p.name==='string' && Number.isFinite(p[sortKey]))
-    .sort((a,b) => b[sortKey]-a[sortKey] || (a.updatedAt||0)-(b.updatedAt||0));
+  const sorted = players.filter(p => typeof p.name==='string' && typeof p[sortKey]==='bigint')
+    .sort((a,b) => cmpBig(b[sortKey], a[sortKey]) || (a.updatedAt||0)-(b.updatedAt||0));
   if(!sorted.length){ list.innerHTML = '<li class="empty">아직 아무도 없어요. 가입하면 1등!</li>'; $('myRank').classList.add('hidden'); return; }
   const myId = me && !me.guest ? me.uid : null;
   list.innerHTML = sorted.slice(0,20).map((p,i) => {
@@ -649,14 +703,14 @@ async function pollRank(){
   polling = true;
   try{
     const list = await listPlayers();
-    // 내 기록은 방금 저장한 최신 값을 우선
     if(me && !me.guest && S){
       const i = list.findIndex(p => p._id === me.uid);
-      const mine = { _id: me.uid, ...S };
-      if(i >= 0) list[i] = { ...list[i], ...mine }; else list.push(mine);
+      const mine = { _id: me.uid, name:S.name, money:S.money, peak:S.peak, updatedAt: Date.now() };
+      if(i >= 0) list[i] = mine; else list.push(mine);
     }
     players = list; rankLoaded = true;
-    lsSet('timingBet_rankCache', JSON.stringify(list.map(p => ({ _id:p._id, name:p.name, money:p.money, peak:p.peak, updatedAt:p.updatedAt })).slice(0,300)));
+    lsSet('timingBet_rankCache', JSON.stringify(list.slice(0,300).map(p => ({
+      _id:p._id, name:p.name, money: p.money===null ? null : p.money.toString(), peak: p.peak===null ? null : p.peak.toString(), updatedAt:p.updatedAt }))));
     setLive('실시간', false);
     renderRank();
   }catch(e){
@@ -664,7 +718,7 @@ async function pollRank(){
     setLive('연결 끊김', true);
     if(!rankLoaded){
       const why = e.code==='network' ? '인터넷 연결을 확인해 주세요'
-        : (e.code==='PERMISSION_DENIED' || String(e.message).includes('ermission')) ? 'Firestore 규칙이 읽기를 막고 있어요'
+        : (e.code==='PERMISSION_DENIED' || String(e.message).toLowerCase().includes('permission')) ? 'Firestore 규칙이 읽기를 막고 있어요'
         : (e.code==='NOT_FOUND' || e.code==='HTTP_404') ? 'Firestore 데이터베이스를 찾을 수 없어요'
         : '오류: ' + esc(e.message || e.code);
       $('rankList').innerHTML = `<li class="empty">랭킹을 읽지 못했어요. ${why}</li>`;
@@ -673,23 +727,39 @@ async function pollRank(){
   polling = false;
 }
 
+/* ===== 새 버전 알림 (다운받은 파일용) ===== */
+async function checkUpdate(){
+  if(location.href.startsWith(SITE_URL)) return;     // 사이트에서 열었으면 항상 최신
+  try{
+    const res = await fetch(SITE_URL + 'index.html?v=' + Date.now(), { cache:'no-store' });
+    const txt = await res.text();
+    const m = txt.match(/const APP_VERSION = (\d+);/);
+    if(m && Number(m[1]) > APP_VERSION) $('updateBar').classList.remove('hidden');
+  }catch(e){}
+}
+
 /* ===== 시작 ===== */
 renderTable();
 setAuthMode('login');
 show('auth');
+$('updateLink').href = SITE_URL;
+$('updateLink').textContent = SITE_URL.replace('https://','');
 
 (async function init(){
+  checkUpdate();
   if(!ONLINE){
     $('dbNote').textContent = '랭킹 서버 설정이 비어 있어요. 파일 맨 위 FIREBASE_CONFIG를 채워 주세요. 지금은 게스트로만 할 수 있어요.';
     setLive('오프라인', true); renderRank(); return;
   }
   $('dbNote').textContent = '다른 곳에서 쓰는 비밀번호는 재사용하지 마세요.';
-  try{ const c = JSON.parse(lsGet('timingBet_rankCache')); if(Array.isArray(c) && c.length){ players = c; rankLoaded = true; setLive('갱신 중', true); renderRank(); } }catch(e){}
+  try{
+    const c = JSON.parse(lsGet('timingBet_rankCache'));
+    if(Array.isArray(c) && c.length){ players = c.map(o => toRankRow(o._id, o)); rankLoaded = true; setLive('갱신 중', true); renderRank(); }
+  }catch(e){}
   pollRank();
   setInterval(pollRank, POLL_MS);
   document.addEventListener('visibilitychange', () => { if(!document.hidden) pollRank(); });
 
-  // 이전 로그인 이어하기
   let saved = null; try{ saved = JSON.parse(lsGet('timingBet_session')); }catch(e){}
   if(saved && saved.rt){
     try{
@@ -700,11 +770,11 @@ show('auth');
         me = { uid: session.uid, name: d.name, guest:false };
         lsSet('timingBet_session', JSON.stringify({ rt: session.refreshToken }));
         enterGame();
+        save();
       }
     }catch(e){ console.warn(e); session = null; }
   }
 })();
-
 </script>
 </body>
 </html>
